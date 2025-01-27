@@ -3,26 +3,36 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime/debug"
+	"strings"
+	"sync"
 
 	"github.com/ConradIrwin/conl-lsp/lsp"
 	"github.com/ConradIrwin/dbg"
 )
 
+var log *os.File
+
 func main() {
-	log, err := os.Create("/Users/conrad/conl-lsp.log")
+	var err error
+	log, err = os.Create("/Users/conrad/conl-lsp.log")
 	if err != nil {
 		panic(err)
 	}
-	lsp.FrameLogger = func(isWrite bool, data []byte) {
-		if isWrite {
-			log.WriteString("Send: " + string(data) + "\n")
-		} else {
-			log.WriteString("Recv: " + string(data) + "\n")
-		}
+	lsp.FrameLogger = func(prefix string, data []byte) {
+		log.WriteString(prefix + ": " + string(data) + "\n")
 	}
+	defer log.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			log.WriteString(fmt.Sprintf("%#v", r))
+			log.WriteString(string(debug.Stack()))
+			panic(r)
+		}
+	}()
 	// 	input := &bytes.Buffer{}
 	// 	requests := make(chan []byte)
 	// 	wg := sync.WaitGroup{}
@@ -37,32 +47,38 @@ func main() {
 	// 	close(requests)
 	// 	wg.Wait()
 	c := lsp.NewConnection()
+	defer func() {
+		if r := recover(); r != nil {
+			c.Notify("window/showMessage", lsp.ShowMessageParams{
+				Type:    lsp.MessageTypeError,
+				Message: fmt.Sprintf("panic: %#v", r),
+			})
+			panic(r)
+		}
+	}()
 	err = NewServer(c, log).Serve(context.Background(), os.Stdin, os.Stdout)
 	if err != nil {
-		dbg.Dbg(err)
+		dbg.To(log, err)
 	}
+	log.WriteString("------------")
 }
 
 type Server struct {
-	c   *lsp.Connection
-	log *os.File
+	c        *lsp.Connection
+	log      *os.File
+	mutex    sync.RWMutex
+	openDocs map[lsp.DocumentURI]*TextDocument
 }
 
 func NewServer(c *lsp.Connection, log *os.File) *Server {
-	s := &Server{c: c, log: log}
-	// Recv: {"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{}}}
-	// Recv: {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///Users/conrad/0/go/conl-lsp/a.conl","languageId":"conl","version":0,"text":"a = 1\n"}}}
+	s := &Server{c: c, log: log, openDocs: make(map[lsp.DocumentURI]*TextDocument)}
 	lsp.HandleRequest(c, "initialize", s.initialize)
-	lsp.HandleNotification(c, "initialized", func(ctx context.Context, val *lsp.InitializedParams) {})
+	lsp.HandleRequest(c, "shutdown", s.shutdown)
+	lsp.HandleNotification(c, "exit", s.exit)
 
-	lsp.HandleRequest(c, "shutdown", func(ctx context.Context, params *lsp.Null) (*lsp.Null, error) {
-		s.log.WriteString("Shutting down server\n")
-		return &lsp.Null{}, nil
-	})
-	lsp.HandleNotification(c, "exit", func(ctx context.Context, val *lsp.Null) {
-		s.log.WriteString("Exit\n")
-		c.Exit()
-	})
+	lsp.HandleNotification(c, "textDocument/didOpen", s.textDocumentDidOpen)
+	lsp.HandleNotification(c, "textDocument/didChange", s.textDocumentDidChange)
+	lsp.HandleNotification(c, "textDocument/didClose", s.textDocumentDidClose)
 	return s
 }
 
@@ -85,4 +101,85 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 			Version: bi.Main.Version,
 		},
 	}, nil
+}
+
+func (s *Server) shutdown(ctx context.Context, params *lsp.Null) (*lsp.Null, error) {
+	return &lsp.Null{}, nil
+}
+func (s *Server) exit(ctx context.Context, params *lsp.Null) {
+	s.c.Exit()
+}
+
+func (s *Server) textDocumentDidOpen(ctx context.Context, params *lsp.DidOpenTextDocumentParams) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.openDocs[params.TextDocument.URI] = NewTextDocument(
+		params.TextDocument.URI,
+		params.TextDocument.Version,
+		params.TextDocument.Text,
+		params.TextDocument.LanguageID,
+	)
+
+	go s.updateDiagnostics(s.openDocs[params.TextDocument.URI])
+}
+
+func (s *Server) textDocumentDidClose(ctx context.Context, params *lsp.DidCloseTextDocumentParams) {
+	delete(s.openDocs, params.TextDocument.URI)
+
+	s.PublishDiagnostics(&lsp.PublishDiagnosticsParams{
+		URI:         params.TextDocument.URI,
+		Diagnostics: []lsp.Diagnostic{},
+	})
+}
+
+func (s *Server) textDocumentDidChange(ctx context.Context, params *lsp.DidChangeTextDocumentParams) {
+	doc, ok := s.openDocs[params.TextDocument.URI]
+	if !ok {
+		return
+	}
+	newDoc := doc.Clone()
+	newDoc.Version = params.TextDocument.Version
+
+	for _, edit := range params.ContentChanges {
+		newDoc.applyChange(edit)
+	}
+	s.openDocs[params.TextDocument.URI] = newDoc
+
+	go s.updateDiagnostics(newDoc)
+}
+
+func (s *Server) updateDiagnostics(doc *TextDocument) {
+	found := strings.IndexRune(doc.Content, 'o')
+	if found > -1 {
+		start := doc.unresolve(found)
+		end := doc.unresolve(found + len("o"))
+
+		s.PublishDiagnostics(&lsp.PublishDiagnosticsParams{
+			URI:     doc.URI,
+			Version: doc.Version,
+			Diagnostics: []lsp.Diagnostic{
+				{
+					Range: lsp.Range{
+						Start: start,
+						End:   end,
+					},
+					Severity: lsp.DiagnosticSeverityError,
+					Message:  "Found 'o'",
+				},
+			},
+		})
+	} else {
+		s.ClearDiagnostics(doc.URI)
+	}
+}
+
+func (s *Server) PublishDiagnostics(params *lsp.PublishDiagnosticsParams) {
+	s.c.Notify("textDocument/publishDiagnostics", params)
+}
+
+func (s *Server) ClearDiagnostics(params lsp.DocumentURI) {
+	s.PublishDiagnostics(&lsp.PublishDiagnosticsParams{
+		URI:         params,
+		Diagnostics: []lsp.Diagnostic{},
+	})
 }

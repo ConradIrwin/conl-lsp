@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"iter"
@@ -13,7 +14,7 @@ var FrameLogger = func(string, []byte) {}
 
 // WriteFrames writes successive frames to the given writer
 // until either it returns an error, or the channel is closed
-func WriteFrames(w io.Writer, ch <-chan []byte) error {
+func WriteFrames(ctx context.Context, w io.Writer, ch <-chan []byte) error {
 	writeAll := func(data []byte) error {
 		for len(data) > 0 {
 			n, err := w.Write(data)
@@ -25,17 +26,21 @@ func WriteFrames(w io.Writer, ch <-chan []byte) error {
 		return nil
 	}
 
-	for msg := range ch {
-		FrameLogger("send", msg)
-		header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(msg))
-		if err := writeAll([]byte(header)); err != nil {
-			return err
-		}
-		if err := writeAll(msg); err != nil {
-			return err
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg := <-ch:
+			FrameLogger("send", msg)
+			header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(msg))
+			if err := writeAll([]byte(header)); err != nil {
+				return err
+			}
+			if err := writeAll(msg); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 // ReadFrames reads successive frames from the given reader

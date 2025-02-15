@@ -92,7 +92,7 @@ func (c *Connection) Serve(ctx context.Context, in io.Reader, out io.Writer) err
 	defer cancel()
 
 	go func() {
-		if err := WriteFrames(os.Stdout, c.out); err != nil {
+		if err := WriteFrames(ctx, os.Stdout, c.out); err != nil {
 			FrameLogger("output error", []byte(err.Error()))
 			errCh <- err
 		}
@@ -106,13 +106,12 @@ func (c *Connection) Serve(ctx context.Context, in io.Reader, out io.Writer) err
 		}
 		c.handleFrame(ctx, msg)
 		select {
-		case err := <-errCh:
-			close(c.out)
-			return err
+		case <-ctx.Done():
+			break
 		default:
 		}
 	}
-	close(c.out)
+	cancel()
 	return <-errCh
 }
 

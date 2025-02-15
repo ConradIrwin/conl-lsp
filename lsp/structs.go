@@ -143,9 +143,9 @@ const (
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#publishDiagnosticsParams
 type PublishDiagnosticsParams struct {
-	URI         DocumentURI  `json:"uri"`
-	Version     int32        `json:"version"`
-	Diagnostics []Diagnostic `json:"diagnostics"`
+	URI         DocumentURI   `json:"uri"`
+	Version     int32         `json:"version"`
+	Diagnostics []*Diagnostic `json:"diagnostics"`
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnostic

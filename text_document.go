@@ -57,7 +57,7 @@ func (t *TextDocument) resolve(p lsp.Position) int {
 				return ix
 			}
 			if c == '\n' {
-				lsp.FrameLogger("textDocument error", []byte(fmt.Sprintf("overshoot of line", ix)))
+				lsp.FrameLogger("textDocument error", []byte(fmt.Sprintf("overshoot of line %v", ix)))
 				return ix
 			}
 			delta := utf16.RuneLen(c)

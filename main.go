@@ -136,32 +136,23 @@ func (s *Server) textDocumentDidChange(ctx context.Context, params *lsp.DidChang
 	go s.updateDiagnostics(newDoc)
 }
 
+func (s *Server) loadSchema(doc lsp.DocumentURI, requested string) (*schema.Schema, error) {
+	if requested == "schema" {
+		schemaSchema, err := os.ReadFile("/Users/conrad/0/go/conl/schema/testdata/schema.conl")
+		if err != nil {
+			return nil, err
+		}
+		return schema.Parse(schemaSchema)
+	}
+	return schema.Any(), nil
+}
+
 func (s *Server) updateDiagnostics(doc *TextDocument) {
 	defer logPanic()
 
-	sch, err := schema.Parse([]byte(`
-root
-  one of
-    = <map>
-    = <list>
-    = <scalar>
-
-scalar
-  scalar = .*
-
-list
-  items = <root>
-
-map
-  keys
-    <scalar> = <root>
-    `))
-	if err != nil {
-		log.WriteString("about to panic:)")
-		panic(err)
-	}
-
-	errs := sch.Validate([]byte(doc.Content))
+	errs := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
+		return s.loadSchema(doc.URI, name)
+	})
 
 	if len(errs) > 0 {
 		diagnostics := make([]*lsp.Diagnostic, len(errs))

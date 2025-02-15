@@ -1,6 +1,10 @@
-a = 1
-; åß∂🐶
-;
+schema = schema
 
-o
-alma
+a = 1
+
+root
+  scalar = .*
+
+boo
+  keys
+    a = 1

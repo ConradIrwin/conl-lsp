@@ -1,3 +1,6 @@
-schema = ./b.schema.conl
-
-bop = boop
+schema = /Users/conrad/0/go/conl/schema/testdata/schema.schema.conl
+; schema = ./b.schema.conl
+;
+root
+  keys =
+    a = 1

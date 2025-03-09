@@ -50,6 +50,10 @@ func (t *TextDocument) applyChange(change lsp.TextDocumentContentChangeEvent) {
 	t.Content = t.Content[:start] + content + t.Content[end:]
 }
 
+func (t *TextDocument) lines() []string {
+	return strings.Split(t.Content, "\n")
+}
+
 func (t *TextDocument) resolve(p lsp.Position) int {
 	for ix, c := range t.Content {
 		if p.Line == 0 {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ func NewServer(c *lsp.Connection) *Server {
 	}
 	lsp.HandleRequest(c, "initialize", s.initialize)
 	lsp.HandleRequest(c, "shutdown", s.shutdown)
+	lsp.HandleRequest(c, "textDocument/completion", s.textDocumentCompletion)
 	lsp.HandleNotification(c, "exit", s.exit)
 
 	lsp.HandleNotification(c, "textDocument/didOpen", s.textDocumentDidOpen)
@@ -52,6 +54,7 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 		Capabilities: lsp.ServerCapabilities{
 			PositionEncodingKind: lsp.PositionEncodingUTF16,
 			TextDocumentSync:     lsp.TextDocumentSyncIncremental,
+			CompletionProvider:   &lsp.CompletionOptions{ResolveProvider: false, TriggerCharacters: []string{"=", " "}},
 		},
 		ServerInfo: &lsp.ServerInfo{
 			Name:    "conl-lsp",
@@ -116,6 +119,92 @@ func (s *Server) textDocumentDidChange(ctx context.Context, params *lsp.DidChang
 	}
 }
 
+var quotedLiteral = regexp.MustCompile(`^"(?:[^\\"]|\\.)*"`)
+
+func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.CompletionParams) (*lsp.CompletionList, error) {
+	defer logPanic()
+	doc, ok := s.openDocs[params.TextDocument.URI]
+	if !ok {
+		return nil, fmt.Errorf("document %v not found", params.TextDocument.URI)
+	}
+
+	lines := doc.lines()
+	line := ""
+	if int(params.Position.Line) < len(lines) {
+		line = lines[int(params.Position.Line)]
+	} else {
+		return nil, fmt.Errorf("invalid position: %v >= %v", params.Position.Line, len(lines))
+	}
+	if int(params.Position.Character) < len(line) {
+		line = line[:params.Position.Character]
+	}
+	p := 0
+	for len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+		line = line[1:]
+		p += 1
+	}
+
+	line = quotedLiteral.ReplaceAllStringFunc(line, func(quoted string) string {
+		return strings.Repeat("a", len(quoted))
+	})
+
+	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
+		return s.loadSchema(&doc.URI, name)
+	})
+
+	list := &lsp.CompletionList{Items: []*lsp.CompletionItem{}}
+
+	if strings.Contains(line, "=") {
+		if strings.TrimSpace(strings.SplitN(line, "=", 2)[1]) != "" && strings.HasSuffix(line, " ") {
+			return list, nil
+		}
+
+		values, _ := result.SuggestedValues(int(params.Position.Line) + 1)
+		for _, suggestion := range values {
+			list.Items = append(list.Items, &lsp.CompletionItem{
+				Label: suggestion,
+			})
+		}
+		if strings.HasSuffix(line, "=") {
+			for _, item := range list.Items {
+				item.InsertText = " " + item.Label
+			}
+		}
+
+	} else {
+		if strings.TrimSpace(line) != "" && strings.HasSuffix(line, " ") {
+			return list, nil
+		}
+
+		lno := 0
+		q := p
+		if p != 0 {
+			row := params.Position.Line
+			for row >= 0 {
+				if strings.Trim(lines[row][0:p], " \t") != "" {
+					line := lines[row][0:p]
+					q = 0
+					for len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+						line = line[1:]
+						q += 1
+					}
+					break
+				}
+				row -= 1
+			}
+			lno = int(row + 1)
+		}
+
+		for _, suggestion := range result.SuggestedKeys(lno) {
+			list.Items = append(list.Items, &lsp.CompletionItem{
+				Label: suggestion,
+			})
+		}
+	}
+
+	return list, nil
+}
+
 func (s *Server) loadSchema(doc *lsp.DocumentURI, requested string) (*schema.Schema, error) {
 	s.mutex.Lock()
 	delete(s.schemasInUse, *doc)
@@ -139,11 +228,11 @@ func (s *Server) loadSchema(doc *lsp.DocumentURI, requested string) (*schema.Sch
 	if result.Scheme == "file" {
 		bytes, err := os.ReadFile(result.Path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read schema %#s: %w", result.Path, err)
+			return nil, fmt.Errorf("failed to read schema %s: %w", result.Path, err)
 		}
 		return schema.Parse(bytes)
 	}
-	return nil, fmt.Errorf("unsupported schema location: %s", result)
+	return nil, fmt.Errorf("unsupported schema location: %v", result)
 }
 
 func (s *Server) updateDiagnostics(doc *TextDocument) {
@@ -151,7 +240,7 @@ func (s *Server) updateDiagnostics(doc *TextDocument) {
 
 	errs := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
 		return s.loadSchema(&doc.URI, name)
-	})
+	}).Errors()
 
 	if len(errs) > 0 {
 		diagnostics := make([]*lsp.Diagnostic, len(errs))

@@ -29,6 +29,13 @@ type ServerInfo struct {
 type ServerCapabilities struct {
 	PositionEncodingKind PositionEncodingKind `json:"positionEncodingKind"`
 	TextDocumentSync     TextDocumentSyncKind `json:"textDocumentSync"`
+	CompletionProvider   *CompletionOptions   `json:"completionProvider,omitempty"`
+}
+
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionOptions
+type CompletionOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+	ResolveProvider   bool     `json:"resolveProvider,omitempty"`
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#positionEncodingKind
@@ -108,6 +115,10 @@ type VersionedTextDocumentIdentifier struct {
 	Version int32       `json:"version"`
 }
 
+type TextDocumentIdentifier struct {
+	URI DocumentURI `json:"uri"`
+}
+
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentContentChangeEvent
 type TextDocumentContentChangeEvent struct {
 	Range *Range `json:"range,omitempty"`
@@ -164,3 +175,26 @@ const (
 	DiagnosticSeverityInformation DiagnosticSeverity = 3
 	DiagnosticSeverityHint        DiagnosticSeverity = 4
 )
+
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_completion
+type CompletionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionList
+type CompletionList struct {
+	IsIncomplete bool              `json:"isIncomplete"`
+	Items        []*CompletionItem `json:"items"`
+}
+
+type CompletionItem struct {
+	Label      string    `json:"label"`
+	InsertText string    `json:"insertText,omitempty"`
+	TextEdit   *TextEdit `json:"textEdit,omitempty"`
+}
+
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}

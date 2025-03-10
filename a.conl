@@ -1,6 +1,11 @@
 schema = /Users/conrad/0/go/conl/schema/testdata/schema.schema.conl
 ; schema = ./b.schema.conl
-;
+
 root
   keys =
-    a = 1
+    a
+      value = 1
+      docs = 2
+  scalar = a
+
+boop

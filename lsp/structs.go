@@ -30,6 +30,7 @@ type ServerCapabilities struct {
 	PositionEncodingKind PositionEncodingKind `json:"positionEncodingKind"`
 	TextDocumentSync     TextDocumentSyncKind `json:"textDocumentSync"`
 	CompletionProvider   *CompletionOptions   `json:"completionProvider,omitempty"`
+	HoverProvider        bool                 `json:"hoverProvider,omitempty"`
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionOptions
@@ -189,12 +190,34 @@ type CompletionList struct {
 }
 
 type CompletionItem struct {
-	Label      string    `json:"label"`
-	InsertText string    `json:"insertText,omitempty"`
-	TextEdit   *TextEdit `json:"textEdit,omitempty"`
+	Label         string         `json:"label"`
+	InsertText    string         `json:"insertText,omitempty"`
+	TextEdit      *TextEdit      `json:"textEdit,omitempty"`
+	Documentation *MarkupContent `json:"documentation,omitempty"`
 }
 
 type TextEdit struct {
 	Range   Range  `json:"range"`
 	NewText string `json:"newText"`
+}
+
+type MarkupContent struct {
+	Kind  MarkupKind `json:"kind"`
+	Value string     `json:"value"`
+}
+
+type MarkupKind string
+
+const (
+	MarkupKindPlainText MarkupKind = "plaintext"
+	MarkupKindMarkdown  MarkupKind = "markdown"
+)
+
+type HoverParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+type Hover struct {
+	Contents *MarkupContent `json:"contents"`
 }

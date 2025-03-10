@@ -13,6 +13,7 @@ import (
 	"sync"
 	"unicode/utf16"
 
+	"github.com/ConradIrwin/conl-go"
 	"github.com/ConradIrwin/conl-go/schema"
 	"github.com/ConradIrwin/conl-lsp/lsp"
 )
@@ -33,6 +34,7 @@ func NewServer(c *lsp.Connection) *Server {
 	lsp.HandleRequest(c, "initialize", s.initialize)
 	lsp.HandleRequest(c, "shutdown", s.shutdown)
 	lsp.HandleRequest(c, "textDocument/completion", s.textDocumentCompletion)
+	lsp.HandleRequest(c, "textDocument/hover", s.textDocumentHover)
 	lsp.HandleNotification(c, "exit", s.exit)
 
 	lsp.HandleNotification(c, "textDocument/didOpen", s.textDocumentDidOpen)
@@ -55,6 +57,7 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 			PositionEncodingKind: lsp.PositionEncodingUTF16,
 			TextDocumentSync:     lsp.TextDocumentSyncIncremental,
 			CompletionProvider:   &lsp.CompletionOptions{ResolveProvider: false, TriggerCharacters: []string{"=", " "}},
+			HoverProvider:        true,
 		},
 		ServerInfo: &lsp.ServerInfo{
 			Name:    "conl-lsp",
@@ -119,8 +122,6 @@ func (s *Server) textDocumentDidChange(ctx context.Context, params *lsp.DidChang
 	}
 }
 
-var quotedLiteral = regexp.MustCompile(`^"(?:[^\\"]|\\.)*"`)
-
 func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.CompletionParams) (*lsp.CompletionList, error) {
 	defer logPanic()
 	doc, ok := s.openDocs[params.TextDocument.URI]
@@ -138,31 +139,29 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 	if int(params.Position.Character) < len(line) {
 		line = line[:params.Position.Character]
 	}
-	p := 0
-	for len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-		line = line[1:]
-		p += 1
-	}
-
-	line = quotedLiteral.ReplaceAllStringFunc(line, func(quoted string) string {
-		return strings.Repeat("a", len(quoted))
-	})
+	column := resolveColumn(line, int(params.Position.Character))
 
 	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
 		return s.loadSchema(&doc.URI, name)
 	})
 
+	key, value := splitLine(line)
+
 	list := &lsp.CompletionList{Items: []*lsp.CompletionItem{}}
 
-	if strings.Contains(line, "=") {
-		if strings.TrimSpace(strings.SplitN(line, "=", 2)[1]) != "" && strings.HasSuffix(line, " ") {
+	if isInValue(line, column) {
+		if value != nil && strings.HasSuffix(line[:column], " ") {
 			return list, nil
 		}
 
 		values, _ := result.SuggestedValues(int(params.Position.Line) + 1)
 		for _, suggestion := range values {
 			list.Items = append(list.Items, &lsp.CompletionItem{
-				Label: suggestion,
+				Label: suggestion.Value,
+				Documentation: &lsp.MarkupContent{
+					Value: suggestion.Docs,
+					Kind:  lsp.MarkupKindMarkdown,
+				},
 			})
 		}
 		if strings.HasSuffix(line, "=") {
@@ -172,37 +171,127 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 		}
 
 	} else {
-		if strings.TrimSpace(line) != "" && strings.HasSuffix(line, " ") {
+		if key != nil && strings.HasSuffix(line[:column], " ") {
 			return list, nil
 		}
 
-		lno := 0
-		q := p
-		if p != 0 {
-			row := params.Position.Line
-			for row >= 0 {
-				if strings.Trim(lines[row][0:p], " \t") != "" {
-					line := lines[row][0:p]
-					q = 0
-					for len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-						line = line[1:]
-						q += 1
-					}
-					break
-				}
-				row -= 1
-			}
-			lno = int(row + 1)
-		}
+		lno := getParentLine(lines, int(params.Position.Line))
 
-		for _, suggestion := range result.SuggestedKeys(lno) {
+		for _, suggestion := range result.SuggestedKeys(lno + 1) {
 			list.Items = append(list.Items, &lsp.CompletionItem{
-				Label: suggestion,
+				Label: suggestion.Value,
+				Documentation: &lsp.MarkupContent{
+					Value: suggestion.Docs,
+					Kind:  lsp.MarkupKindMarkdown,
+				},
 			})
 		}
 	}
 
 	return list, nil
+}
+
+var quotedLiteral = regexp.MustCompile(`^"(?:[^\\"]|\\.)*"`)
+
+func isInValue(line string, pos int) bool {
+	line = quotedLiteral.ReplaceAllStringFunc(line, func(quoted string) string {
+		return strings.Repeat("a", len(quoted))
+	})
+
+	eq := strings.Index(line, "=")
+	if eq < 0 {
+		return false
+	}
+
+	return pos > eq
+}
+
+func getParentLine(lines []string, lno int) int {
+	line := lines[lno]
+	p := 0
+	for p < len(line) && (line[p] == ' ' || line[p] == '\t') {
+		p += 1
+	}
+	lno -= 1
+	for lno >= 0 {
+		prefix := strings.Trim(lines[lno][0:p], " \t")
+		if prefix != "" && !strings.HasPrefix(prefix, ";") {
+			break
+		}
+		lno -= 1
+	}
+
+	return lno
+}
+
+func splitLine(line string) (*conl.Token, *conl.Token) {
+	var key *conl.Token
+	var value *conl.Token
+	for token := range conl.Tokens([]byte(line)) {
+		if token.Kind == conl.MapKey {
+			key = &token
+		} else if token.Kind == conl.Scalar {
+			value = &token
+		}
+	}
+	return key, value
+}
+
+func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams) (*lsp.Hover, error) {
+	defer logPanic()
+	doc, ok := s.openDocs[params.TextDocument.URI]
+	if !ok {
+		return nil, fmt.Errorf("document %v not found", params.TextDocument.URI)
+	}
+
+	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
+		return s.loadSchema(&doc.URI, name)
+	})
+
+	lines := doc.lines()
+	line := ""
+	if int(params.Position.Line) < len(lines) {
+		line = lines[int(params.Position.Line)]
+	} else {
+		return nil, fmt.Errorf("invalid position: %v >= %v", params.Position.Line, len(lines))
+	}
+	column := resolveColumn(line, int(params.Position.Character))
+
+	key, value := splitLine(line)
+
+	if isInValue(line, column) && value != nil {
+		values, _ := result.SuggestedValues(int(params.Position.Line) + 1)
+		for _, v := range values {
+			if v.Value == value.Content {
+				return &lsp.Hover{
+					Contents: &lsp.MarkupContent{
+						Kind:  lsp.MarkupKindMarkdown,
+						Value: v.Docs,
+					},
+				}, nil
+			}
+		}
+	}
+
+	if key == nil {
+		return nil, nil
+	}
+
+	lno := getParentLine(lines, int(params.Position.Line))
+
+	keys := result.SuggestedKeys(lno + 1)
+	for _, k := range keys {
+		if k.Value == key.Content {
+			return &lsp.Hover{
+				Contents: &lsp.MarkupContent{
+					Kind:  lsp.MarkupKindMarkdown,
+					Value: k.Docs,
+				},
+			}, nil
+		}
+	}
+
+	return nil, nil
 }
 
 func (s *Server) loadSchema(doc *lsp.DocumentURI, requested string) (*schema.Schema, error) {

@@ -97,3 +97,15 @@ func (t *TextDocument) unresolve(ix int) lsp.Position {
 	}
 	return p
 }
+
+func resolveColumn(line string, utf16Pos int) int {
+	pos := 0
+	for ix, c := range line {
+		if pos >= utf16Pos {
+			return ix
+		}
+		pos += utf16.RuneLen(c)
+	}
+
+	return len(line)
+}

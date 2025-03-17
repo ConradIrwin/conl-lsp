@@ -257,38 +257,21 @@ func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams)
 	}
 	column := resolveColumn(line, int(params.Position.Character))
 
-	key, value := splitLine(line)
+	_, value := splitLine(line)
 
+	var docs string
 	if isInValue(line, column) && value != nil {
-		values, _ := result.SuggestedValues(int(params.Position.Line) + 1)
-		for _, v := range values {
-			if v.Value == value.Content {
-				return &lsp.Hover{
-					Contents: &lsp.MarkupContent{
-						Kind:  lsp.MarkupKindMarkdown,
-						Value: v.Docs,
-					},
-				}, nil
-			}
-		}
+		docs = result.DocsForValue(int(params.Position.Line) + 1)
+	} else {
+		docs = result.DocsForKey(int(params.Position.Line) + 1)
 	}
-
-	if key == nil {
-		return nil, nil
-	}
-
-	lno := getParentLine(lines, int(params.Position.Line))
-
-	keys := result.SuggestedKeys(lno + 1)
-	for _, k := range keys {
-		if k.Value == key.Content {
-			return &lsp.Hover{
-				Contents: &lsp.MarkupContent{
-					Kind:  lsp.MarkupKindMarkdown,
-					Value: k.Docs,
-				},
-			}, nil
-		}
+	if docs != "" {
+		return &lsp.Hover{
+			Contents: &lsp.MarkupContent{
+				Kind:  lsp.MarkupKindMarkdown,
+				Value: docs,
+			},
+		}, nil
 	}
 
 	return nil, nil

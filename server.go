@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -18,10 +19,16 @@ import (
 	"github.com/ConradIrwin/conl-lsp/lsp"
 )
 
+type httpSchema struct {
+	schema *schema.Schema
+	err    error
+}
+
 type Server struct {
-	c        *lsp.Connection
-	mutex    sync.RWMutex
-	openDocs map[lsp.DocumentURI]*TextDocument
+	c           *lsp.Connection
+	mutex       sync.RWMutex
+	openDocs    map[lsp.DocumentURI]*TextDocument
+	httpSchemas map[lsp.DocumentURI]httpSchema
 
 	schemasInUse map[lsp.DocumentURI]lsp.DocumentURI
 }
@@ -30,6 +37,7 @@ func NewServer(c *lsp.Connection) *Server {
 	s := &Server{c: c,
 		openDocs:     make(map[lsp.DocumentURI]*TextDocument),
 		schemasInUse: map[lsp.DocumentURI]lsp.DocumentURI{},
+		httpSchemas:  map[lsp.DocumentURI]httpSchema{},
 	}
 	lsp.HandleRequest(c, "initialize", s.initialize)
 	lsp.HandleRequest(c, "shutdown", s.shutdown)
@@ -100,7 +108,10 @@ func (s *Server) textDocumentDidClose(ctx context.Context, params *lsp.DidCloseT
 }
 
 func (s *Server) textDocumentDidChange(ctx context.Context, params *lsp.DidChangeTextDocumentParams) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	doc, ok := s.openDocs[params.TextDocument.URI]
+
 	if !ok {
 		return
 	}
@@ -142,7 +153,7 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 	column := resolveColumn(line, int(params.Position.Character))
 
 	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
-		return s.loadSchema(&doc.URI, name)
+		return s.loadSchema(doc.URI, name)
 	})
 
 	key, value := splitLine(line)
@@ -214,6 +225,9 @@ func getParentLine(lines []string, lno int) int {
 	}
 	lno -= 1
 	for lno >= 0 {
+		if len(lines[lno]) < p {
+			continue
+		}
 		prefix := strings.Trim(lines[lno][0:p], " \t")
 		if prefix != "" && !strings.HasPrefix(prefix, ";") {
 			break
@@ -245,7 +259,7 @@ func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams)
 	}
 
 	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
-		return s.loadSchema(&doc.URI, name)
+		return s.loadSchema(doc.URI, name)
 	})
 
 	lines := doc.lines()
@@ -277,26 +291,33 @@ func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams)
 	return nil, nil
 }
 
-func (s *Server) loadSchema(doc *lsp.DocumentURI, requested string) (*schema.Schema, error) {
-	s.mutex.Lock()
-	delete(s.schemasInUse, *doc)
-	s.mutex.Unlock()
+func (s *Server) loadSchema(docUrl lsp.DocumentURI, requested string) (*schema.Schema, error) {
 	if requested == "" {
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		delete(s.schemasInUse, docUrl)
 		return schema.Any(), nil
 	}
-
-	relative, err := url.Parse(requested)
+	schemaUrl, err := docUrl.ResolveReference(requested)
 	if err != nil {
-		return nil, fmt.Errorf("could not interpret %#v as a path or url", requested)
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		delete(s.schemasInUse, docUrl)
+		return nil, err
 	}
-	base := (*url.URL)(doc)
-	result := (*lsp.DocumentURI)(base.ResolveReference(relative))
+
 	s.mutex.Lock()
-	s.schemasInUse[*doc] = *result
+	shouldLoad := false
+	if s.schemasInUse[docUrl] != schemaUrl {
+		shouldLoad = true
+	}
+	s.schemasInUse[docUrl] = schemaUrl
 	s.mutex.Unlock()
-	if schemaDoc, ok := s.openDocs[*result]; ok {
+
+	if schemaDoc, ok := s.openDocs[schemaUrl]; ok {
 		return schema.Parse([]byte(schemaDoc.Content))
 	}
+	result := schemaUrl.URL()
 	if result.Scheme == "file" {
 		bytes, err := os.ReadFile(result.Path)
 		if err != nil {
@@ -304,14 +325,52 @@ func (s *Server) loadSchema(doc *lsp.DocumentURI, requested string) (*schema.Sch
 		}
 		return schema.Parse(bytes)
 	}
+	if result.Scheme == "https" || result.Scheme == "http" {
+		s.mutex.Lock()
+		cached, ok := s.httpSchemas[schemaUrl]
+		s.mutex.Unlock()
+		if ok {
+			if cached.schema != nil {
+				return cached.schema, nil
+			}
+			if !shouldLoad {
+				return nil, cached.err
+			}
+		}
+		schema, err := s.loadHTTPSchema(result)
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		s.httpSchemas[schemaUrl] = httpSchema{schema, err}
+		if err != nil {
+			return nil, err
+		}
+		return schema, nil
+	}
 	return nil, fmt.Errorf("unsupported schema location: %v", result)
+}
+
+func (s *Server) loadHTTPSchema(uri *url.URL) (*schema.Schema, error) {
+	resp, err := http.Get(uri.String())
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch schema %s: %s", uri, resp.Status)
+	}
+	bytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read schema %s: %w", uri, err)
+	}
+	return schema.Parse(bytes)
 }
 
 func (s *Server) updateDiagnostics(doc *TextDocument) {
 	defer logPanic()
 
 	errs := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
-		return s.loadSchema(&doc.URI, name)
+		return s.loadSchema(doc.URI, name)
 	}).Errors()
 
 	if len(errs) > 0 {

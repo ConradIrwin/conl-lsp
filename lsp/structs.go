@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 )
 
@@ -85,7 +86,7 @@ type TextDocumentItem struct {
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#uri
-type DocumentURI url.URL
+type DocumentURI string
 
 func (d *DocumentURI) UnmarshalJSON(data []byte) error {
 	raw := ""
@@ -96,13 +97,34 @@ func (d *DocumentURI) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	*d = DocumentURI(*u)
+	*d = DocumentURI(u.String())
 	return nil
 }
 
 func (d *DocumentURI) MarshalJSON() ([]byte, error) {
-	raw := (*url.URL)(d).String()
-	return json.Marshal(raw)
+	return json.Marshal(d.String())
+}
+
+func (d DocumentURI) String() string {
+	return string(d)
+}
+
+func (d DocumentURI) URL() *url.URL {
+	u, err := url.Parse(string(d))
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
+func (d DocumentURI) ResolveReference(requested string) (DocumentURI, error) {
+	relative, err := url.Parse(requested)
+	if err != nil {
+		return DocumentURI(""), fmt.Errorf("could not interpret %#v as a path or url", requested)
+	}
+	base := d.URL()
+	resultUrl := base.ResolveReference(relative)
+	return DocumentURI(resultUrl.String()), nil
 }
 
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#didChangeTextDocumentParams

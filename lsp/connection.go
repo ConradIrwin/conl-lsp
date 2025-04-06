@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"reflect"
 )
 
@@ -20,34 +19,6 @@ const (
 	EInternalError  ErrorCode = -32603
 )
 
-type recv struct {
-	JsonRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-	Result  json.RawMessage `json:"result"`
-	Error   *rpcError       `json:"error"`
-	Id      json.RawMessage `json:"id"`
-}
-
-type request struct {
-	JsonRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  any             `json:"params"`
-}
-
-type response struct {
-	JsonRPC string          `json:"jsonrpc"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-	Id      json.RawMessage `json:"id,omitempty"`
-}
-
-type rpcError struct {
-	Code    ErrorCode `json:"code"`
-	Message string    `json:"message"`
-}
-
 type handler struct {
 	notification func(ctx context.Context, val any)
 	request      func(ctx context.Context, val any) (any, error)
@@ -56,7 +27,7 @@ type handler struct {
 
 type Connection struct {
 	handlers map[string]handler
-	out      chan []byte
+	out      chan *Frame
 	cancel   context.CancelFunc
 }
 
@@ -84,18 +55,19 @@ func HandleRequest[T any, U any](c *Connection, method string, fn func(ctx conte
 	}
 }
 
-func (c *Connection) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+func (c *Connection) Serve(ctx context.Context, in io.Reader, out io.WriteCloser) error {
 	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(ctx)
-	c.out = make(chan []byte)
+	c.out = make(chan *Frame)
 	c.cancel = cancel
 	defer cancel()
 
 	go func() {
-		if err := WriteFrames(ctx, os.Stdout, c.out); err != nil {
+		if err := WriteFrames(ctx, out, c.out); err != nil {
 			FrameLogger("output error", []byte(err.Error()))
 			errCh <- err
 		}
+		out.Close()
 		close(errCh)
 	}()
 
@@ -115,36 +87,30 @@ func (c *Connection) Serve(ctx context.Context, in io.Reader, out io.Writer) err
 	return <-errCh
 }
 
+func (c *Connection) Notify(method string, params any) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		panic(err)
+	}
+	c.out <- &Frame{
+		JsonRPC: "2.0",
+		Method:  method,
+		Params:  json.RawMessage(raw),
+	}
+}
+
+// Terminate the connection
 func (c *Connection) Exit() {
 	c.cancel()
 }
 
-func (c *Connection) Notify(method string, params any) {
-	bytes, err := json.Marshal(&request{
-		JsonRPC: "2.0",
-		Method:  method,
-		Params:  params,
-	})
-	if err != nil {
-		panic(err)
-	}
-	c.out <- bytes
-}
-
-func (c *Connection) handleFrame(ctx context.Context, msg []byte) {
-	msgId := json.RawMessage(nil)
-	recv := recv{}
-
-	if len(msg) > 0 && msg[0] == '[' {
-		c.respondError(msgId, EParseError, fmt.Errorf("batch requests are not yet supported"))
+func (c *Connection) handleFrame(ctx context.Context, recv *Frame) {
+	if recv.Batch != nil {
+		c.respondError(json.RawMessage(nil), EParseError, fmt.Errorf("batch requests are not yet supported"))
 		return
 	}
 
-	if err := json.Unmarshal(msg, &recv); err != nil {
-		c.respondError(msgId, EParseError, err)
-		return
-	}
-	msgId = recv.Id
+	msgId := recv.Id
 	handler, ok := c.handlers[recv.Method]
 	if !ok {
 		c.respondError(msgId, EMethodNotFound, fmt.Errorf("%s not found", recv.Method))
@@ -177,31 +143,24 @@ func (c *Connection) handleFrame(ctx context.Context, msg []byte) {
 }
 
 func (c *Connection) respond(id json.RawMessage, result any) {
-	bytes, err := json.Marshal(&response{
-		JsonRPC: "2.0",
-		Result:  result,
-		Id:      id,
-	})
+	raw, err := json.Marshal(result)
 	if err != nil {
 		panic(err)
 	}
-	c.out <- bytes
+	c.out <- &Frame{
+		JsonRPC: "2.0",
+		Result:  json.RawMessage(raw),
+		Id:      id,
+	}
 }
 
 func (c *Connection) respondError(id json.RawMessage, code ErrorCode, err error) {
-	if id == nil {
-		return
-	}
-	bytes, err := json.Marshal(&response{
+	c.out <- &Frame{
 		JsonRPC: "2.0",
-		Error: &rpcError{
+		Error: &RpcError{
 			Code:    code,
 			Message: err.Error(),
 		},
 		Id: id,
-	})
-	if err != nil {
-		panic(err)
 	}
-	c.out <- bytes
 }

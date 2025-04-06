@@ -41,17 +41,17 @@ func NewServer(c *lsp.Connection) *Server {
 	}
 	lsp.HandleRequest(c, "initialize", s.initialize)
 	lsp.HandleRequest(c, "shutdown", s.shutdown)
-	lsp.HandleRequest(c, "textDocument/completion", s.textDocumentCompletion)
-	lsp.HandleRequest(c, "textDocument/hover", s.textDocumentHover)
 	lsp.HandleNotification(c, "exit", s.exit)
 
+	lsp.HandleRequest(c, "textDocument/completion", s.textDocumentCompletion)
+	lsp.HandleRequest(c, "textDocument/hover", s.textDocumentHover)
 	lsp.HandleNotification(c, "textDocument/didOpen", s.textDocumentDidOpen)
 	lsp.HandleNotification(c, "textDocument/didChange", s.textDocumentDidChange)
 	lsp.HandleNotification(c, "textDocument/didClose", s.textDocumentDidClose)
 	return s
 }
 
-func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
+func (s *Server) Serve(ctx context.Context, r io.Reader, w io.WriteCloser) error {
 	return s.c.Serve(ctx, r, w)
 }
 
@@ -165,7 +165,7 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 			return list, nil
 		}
 
-		values, _ := result.SuggestedValues(int(params.Position.Line) + 1)
+		values := result.SuggestedValues(int(params.Position.Line) + 1)
 		for _, suggestion := range values {
 			list.Items = append(list.Items, &lsp.CompletionItem{
 				Label: suggestion.Value,

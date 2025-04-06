@@ -1,0 +1,6 @@
+schema = https://conl.dev/schemas/schema.conl
+root = <root>
+definitions
+  root
+    keys
+      completion = .*

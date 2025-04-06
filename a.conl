@@ -6,6 +6,6 @@ root
     a
       value = 1
       docs = 2
-  scalar = a
+  scalar scalar
 
 boop

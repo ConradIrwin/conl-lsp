@@ -212,11 +212,19 @@ type CompletionList struct {
 }
 
 type CompletionItem struct {
-	Label         string         `json:"label"`
-	InsertText    string         `json:"insertText,omitempty"`
-	TextEdit      *TextEdit      `json:"textEdit,omitempty"`
-	Documentation *MarkupContent `json:"documentation,omitempty"`
+	Label          string         `json:"label"`
+	InsertText     string         `json:"insertText,omitempty"`
+	TextEdit       *TextEdit      `json:"textEdit,omitempty"`
+	Documentation  *MarkupContent `json:"documentation,omitempty"`
+	InsertTextMode InsertTextMode `json:"insertTextMode,omitempty"`
 }
+
+type InsertTextMode int
+
+const (
+	InsertTextModeAsIs              InsertTextMode = 1
+	InsertTextModeAdjustIndentation InsertTextMode = 2
+)
 
 type TextEdit struct {
 	Range   Range  `json:"range"`
@@ -242,4 +250,8 @@ type HoverParams struct {
 
 type Hover struct {
 	Contents *MarkupContent `json:"contents"`
+}
+
+type DocumentFormattingParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
 }

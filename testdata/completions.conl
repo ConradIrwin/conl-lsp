@@ -4,3 +4,10 @@ definitions
   root
     keys
       completion = .*
+      value = <value>
+
+  value
+    any of
+      = alpha
+      = ant
+      = beta

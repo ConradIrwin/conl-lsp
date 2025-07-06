@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -77,6 +78,7 @@ func (s *Server) initialize(ctx context.Context, params *lsp.InitializeParams) (
 func (s *Server) shutdown(ctx context.Context, params *lsp.Null) (*lsp.Null, error) {
 	return &lsp.Null{}, nil
 }
+
 func (s *Server) exit(ctx context.Context, params *lsp.Null) {
 	s.c.Exit()
 }
@@ -150,21 +152,39 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 	if int(params.Position.Character) < len(line) {
 		line = line[:params.Position.Character]
 	}
-	column := resolveColumn(line, int(params.Position.Character))
+	column := indexUtf16To8(line, params.Position.Character)
 
 	result := schema.Validate([]byte(doc.Content), func(name string) (*schema.Schema, error) {
 		return s.loadSchema(doc.URI, name)
 	})
 
-	key, value := splitLine(line)
+	keyStart, keyEnd, _, _, commentStart := schema.SplitLine(line)
 
 	list := &lsp.CompletionList{Items: []*lsp.CompletionItem{}}
 
-	if isInValue(line, column) {
-		if value != nil && strings.HasSuffix(line[:column], " ") {
-			return list, nil
-		}
+	if column <= keyEnd {
+		lno := getParentLine(lines, int(params.Position.Line))
+		keyStart16 := indexUtf8To16(line, keyStart)
+		keyEnd16 := indexUtf8To16(line, keyEnd)
 
+		for _, suggestion := range result.SuggestedKeys(lno + 1) {
+			list.Items = append(list.Items, &lsp.CompletionItem{
+				Label: suggestion.Value,
+				Documentation: &lsp.MarkupContent{
+					Value: suggestion.Docs,
+					Kind:  lsp.MarkupKindMarkdown,
+				},
+				TextEdit: &lsp.TextEdit{
+					Range: lsp.Range{
+						Start: lsp.Position{Line: params.Position.Line, Character: keyStart16},
+						End:   lsp.Position{Line: params.Position.Line, Character: keyEnd16},
+					},
+					NewText: suggestion.Value,
+				},
+				InsertTextMode: lsp.InsertTextModeAsIs,
+			})
+		}
+	} else if keyEnd < column && column <= commentStart {
 		values := result.SuggestedValues(int(params.Position.Line) + 1)
 		for _, suggestion := range values {
 			list.Items = append(list.Items, &lsp.CompletionItem{
@@ -179,23 +199,6 @@ func (s *Server) textDocumentCompletion(ctx context.Context, params *lsp.Complet
 			for _, item := range list.Items {
 				item.InsertText = " " + item.Label
 			}
-		}
-
-	} else {
-		if key != nil && strings.HasSuffix(line[:column], " ") {
-			return list, nil
-		}
-
-		lno := getParentLine(lines, int(params.Position.Line))
-
-		for _, suggestion := range result.SuggestedKeys(lno + 1) {
-			list.Items = append(list.Items, &lsp.CompletionItem{
-				Label: suggestion.Value,
-				Documentation: &lsp.MarkupContent{
-					Value: suggestion.Docs,
-					Kind:  lsp.MarkupKindMarkdown,
-				},
-			})
 		}
 	}
 
@@ -269,14 +272,14 @@ func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams)
 	} else {
 		return nil, fmt.Errorf("invalid position: %v >= %v", params.Position.Line, len(lines))
 	}
-	column := resolveColumn(line, int(params.Position.Character))
+	column := indexUtf16To8(line, params.Position.Character)
 
-	_, value := splitLine(line)
+	keyStart, keyEnd, valueStart, valueEnd, _ := schema.SplitLine(line)
 
 	var docs string
-	if isInValue(line, column) && value != nil {
+	if column >= valueStart && column <= valueEnd {
 		docs = result.DocsForValue(int(params.Position.Line) + 1)
-	} else {
+	} else if column >= keyStart && column <= keyEnd {
 		docs = result.DocsForKey(int(params.Position.Line) + 1)
 	}
 	if docs != "" {
@@ -291,19 +294,33 @@ func (s *Server) textDocumentHover(ctx context.Context, params *lsp.HoverParams)
 	return nil, nil
 }
 
-func (s *Server) loadSchema(docUrl lsp.DocumentURI, requested string) (*schema.Schema, error) {
+func (s *Server) resolveReference(docUrl lsp.DocumentURI, requested string) (lsp.DocumentURI, error) {
 	if requested == "" {
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
-		delete(s.schemasInUse, docUrl)
-		return schema.Any(), nil
+		return "", nil
 	}
-	schemaUrl, err := docUrl.ResolveReference(requested)
-	if err != nil {
+	if strings.HasPrefix(requested, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return lsp.DocumentURI("file://" + home + requested[1:]), nil
+	}
+	if filepath.IsAbs(requested) {
+		return lsp.DocumentURI("file://" + requested), nil
+	}
+	return docUrl.ResolveReference(requested)
+}
+
+func (s *Server) loadSchema(docUrl lsp.DocumentURI, requested string) (*schema.Schema, error) {
+	schemaUrl, err := s.resolveReference(docUrl, requested)
+	if schemaUrl == "" || err != nil {
 		s.mutex.Lock()
 		defer s.mutex.Unlock()
 		delete(s.schemasInUse, docUrl)
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		return schema.Any(), nil
 	}
 
 	s.mutex.Lock()

@@ -113,7 +113,9 @@ func (c *Connection) handleFrame(ctx context.Context, recv *Frame) {
 	msgId := recv.Id
 	handler, ok := c.handlers[recv.Method]
 	if !ok {
-		c.respondError(msgId, EMethodNotFound, fmt.Errorf("%s not found", recv.Method))
+		if msgId != nil {
+			c.respondError(msgId, EMethodNotFound, fmt.Errorf("%s not found", recv.Method))
+		}
 		return
 	}
 

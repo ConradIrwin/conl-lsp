@@ -9,6 +9,7 @@ import (
 	"iter"
 	"os"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -85,6 +86,19 @@ func nextId() json.RawMessage {
 		panic(err)
 	}
 	return id
+}
+
+func contentPos(input string) (string, lsp.Position) {
+	before, after, found := strings.Cut(input, "¡")
+	if !found {
+		panic("contentPos must contain ¡")
+	}
+	lines := strings.Split(before, "\n")
+	return before + after, lsp.Position{
+		Line:      uint32(len(lines)) - 1,
+		Character: utf16Len(lines[len(lines)-1]),
+	}
+
 }
 
 func testNotify(client *testServer, method string, params any) {
@@ -223,25 +237,52 @@ func TestHover(t *testing.T) {
 	}
 }
 
-func TestCompletion(t *testing.T) {
-	uri, server := newTestServerFor(t, "schema = ./completions.conl\nco\n")
+func expectCompletions(t *testing.T, list *lsp.CompletionList, expected ...string) {
+	t.Helper()
+	var actual []string
+	for _, completion := range list.Items {
+		actual = append(actual, completion.Label)
+	}
+	if !reflect.DeepEqual(expected, actual) {
+		t.Fatalf("got %#v, expected %#v", actual, expected)
+	}
+}
+
+func TestKeyCompletion(t *testing.T) {
+	content, position := contentPos("schema = ./completions.conl\nco¡\n")
+	uri, server := newTestServerFor(t, content)
 
 	completions := testRequest[lsp.CompletionList](server, "textDocument/completion", lsp.CompletionParams{
 		TextDocument: lsp.TextDocumentIdentifier{
 			URI: uri,
 		},
-		Position: lsp.Position{
-			Line:      1,
-			Character: 2,
-		},
+		Position: position,
 	})
-	expected := []string{"completion"}
-	actual := []string{}
-	for _, completion := range completions.Items {
-		actual = append(actual, completion.Label)
-	}
-	if !reflect.DeepEqual(expected, actual) {
-		t.Fatalf("got %#v, expected %#v", completions, expected)
-	}
+	expectCompletions(t, completions, "completion", "value")
+}
 
+func TestValueCompletion(t *testing.T) {
+	content, position := contentPos("schema = ./completions.conl\nvalue = a¡\n")
+	uri, server := newTestServerFor(t, content)
+
+	completions := testRequest[lsp.CompletionList](server, "textDocument/completion", lsp.CompletionParams{
+		TextDocument: lsp.TextDocumentIdentifier{
+			URI: uri,
+		},
+		Position: position,
+	})
+	expectCompletions(t, completions, "alpha", "ant", "beta")
+}
+
+func TestCommentCompletion(t *testing.T) {
+	content, position := contentPos("schema = ./completions.conl\nvalue = ;¡\n")
+	uri, server := newTestServerFor(t, content)
+
+	completions := testRequest[lsp.CompletionList](server, "textDocument/completion", lsp.CompletionParams{
+		TextDocument: lsp.TextDocumentIdentifier{
+			URI: uri,
+		},
+		Position: position,
+	})
+	expectCompletions(t, completions)
 }

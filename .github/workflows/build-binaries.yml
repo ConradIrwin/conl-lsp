@@ -107,20 +107,20 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -la binaries/*/
 
-      - name: Create checksums
+      - name: Create checksums and flatten structure
         run: |
+          mkdir -p release-files
           cd binaries
           for dir in */; do
             if [ -d "$dir" ]; then
               cd "$dir"
               for file in *; do
                 if [ -f "$file" ]; then
-                  sha256sum "$file" > "../$file.sha256"
-                  mv "$file" ../
+                  sha256sum "$file" > "../../release-files/$file.sha256"
+                  cp "$file" "../../release-files/"
                 fi
               done
               cd ..
-              rmdir "$dir"
             fi
           done
 
@@ -145,7 +145,7 @@ jobs:
             - **Windows ARM64**: `conl-lsp-windows-arm64.exe`
 
             Each binary includes a `.sha256` checksum file for verification.
-          files: binaries/*
+          files: release-files/*
           draft: false
           prerelease: true
         env:

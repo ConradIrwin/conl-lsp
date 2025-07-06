@@ -2,7 +2,7 @@ name: Build Binaries
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build:
@@ -54,43 +54,43 @@ jobs:
             goarch: arm64
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        path: conl-lsp
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: conl-lsp
 
-    - name: Checkout conl-go dependency
-      uses: actions/checkout@v4
-      with:
-        repository: ConradIrwin/conl-go
-        path: conl
-        ref: v0.3.1
+      - name: Checkout conl-go dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ConradIrwin/conl-go
+          path: conl
+          ref: v0.3.1
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
 
-    - name: Build binary
-      working-directory: conl-lsp
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-      run: |
-        if [ "${{ matrix.os }}" = "windows" ]; then
-          go build -o conl-lsp-${{ matrix.os }}-${{ matrix.arch }}.exe
-        else
-          go build -o conl-lsp-${{ matrix.os }}-${{ matrix.arch }}
-        fi
-      shell: bash
+      - name: Build binary
+        working-directory: conl-lsp
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            go build -o conl-lsp-${{ matrix.os }}-${{ matrix.arch }}.exe
+          else
+            go build -o conl-lsp-${{ matrix.os }}-${{ matrix.arch }}
+          fi
+        shell: bash
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: conl-lsp-${{ matrix.os }}-${{ matrix.arch }}
-        path: |
-          conl-lsp/conl-lsp-${{ matrix.os }}-${{ matrix.arch }}*
-        retention-days: 30
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: conl-lsp-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            conl-lsp/conl-lsp-${{ matrix.os }}-${{ matrix.arch }}*
+          retention-days: 30
 
   release:
     name: Create Release
@@ -99,51 +99,54 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: binaries
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
 
-    - name: Display structure of downloaded files
-      run: ls -la binaries/*/
+      - name: Display structure of downloaded files
+        run: ls -la binaries/*/
 
-    - name: Create checksums
-      run: |
-        cd binaries
-        for dir in */; do
-          cd "$dir"
-          for file in *; do
-            if [ -f "$file" ]; then
-              sha256sum "$file" > "$file.sha256"
-              mv "$file" "$file.sha256" ../
+      - name: Create checksums
+        run: |
+          cd binaries
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              cd "$dir"
+              for file in *; do
+                if [ -f "$file" ]; then
+                  sha256sum "$file" > "../$file.sha256"
+                  mv "$file" ../
+                fi
+              done
+              cd ..
+              rmdir "$dir"
             fi
           done
-          cd ..
-        done
 
-    - name: Create timestamp tag
-      id: create_tag
-      run: echo "tag=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+      - name: Create timestamp tag
+        id: create_tag
+        run: echo "tag=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.create_tag.outputs.tag }}
-        name: Automated Build ${{ steps.create_tag.outputs.tag }}
-        body: |
-          Automated build from commit ${{ github.sha }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag }}
+          name: Automated Build ${{ steps.create_tag.outputs.tag }}
+          body: |
+            Automated build from commit ${{ github.sha }}
 
-          ### Available binaries:
-          - **Linux x86_64**: `conl-lsp-linux-amd64`
-          - **Linux ARM64**: `conl-lsp-linux-arm64`
-          - **macOS x86_64**: `conl-lsp-darwin-amd64`
-          - **macOS ARM64 (Apple Silicon)**: `conl-lsp-darwin-arm64`
-          - **Windows x86_64**: `conl-lsp-windows-amd64.exe`
-          - **Windows ARM64**: `conl-lsp-windows-arm64.exe`
+            ### Available binaries:
+            - **Linux x86_64**: `conl-lsp-linux-amd64`
+            - **Linux ARM64**: `conl-lsp-linux-arm64`
+            - **macOS x86_64**: `conl-lsp-darwin-amd64`
+            - **macOS ARM64 (Apple Silicon)**: `conl-lsp-darwin-arm64`
+            - **Windows x86_64**: `conl-lsp-windows-amd64.exe`
+            - **Windows ARM64**: `conl-lsp-windows-arm64.exe`
 
-          Each binary includes a `.sha256` checksum file for verification.
-        files: binaries/*
-        draft: false
-        prerelease: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            Each binary includes a `.sha256` checksum file for verification.
+          files: binaries/*
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
